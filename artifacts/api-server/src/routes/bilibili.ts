@@ -145,4 +145,99 @@ router.get("/image", async (req: Request, res: Response) => {
   }
 });
 
+router.get("/search", async (req: Request, res: Response) => {
+  const keyword = req.query.q as string;
+  const page = parseInt((req.query.page as string) ?? "1", 10) || 1;
+
+  if (!keyword || keyword.trim().length === 0) {
+    res.status(400).json({ error: "Missing query parameter q" });
+    return;
+  }
+
+  const url = `https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=${encodeURIComponent(keyword.trim())}&order=totalrank&page=${page}&ps=20`;
+
+  try {
+    const response = await fetch(url, { headers: BILIBILI_HEADERS });
+
+    if (!response.ok) {
+      res.status(502).json({ error: "Failed to fetch from Bilibili search" });
+      return;
+    }
+
+    const json = (await response.json()) as {
+      code: number;
+      data: {
+        result?: Array<{
+          bvid: string;
+          title: string;
+          pic: string;
+          duration: string;
+          play: number;
+          like: number;
+          pubdate: number;
+          author: string;
+          upic: string;
+          typename: string;
+          tag: string;
+          description: string;
+        }>;
+        numResults?: number;
+        numPages?: number;
+      };
+    };
+
+    if (json.code !== 0 || !json.data?.result) {
+      res.json({ videos: [], total: 0, pages: 0 });
+      return;
+    }
+
+    const seen = new Set<string>();
+
+    const videos = json.data.result
+      .filter((item) => {
+        if (!item.bvid || seen.has(item.bvid)) return false;
+        seen.add(item.bvid);
+        return true;
+      })
+      .map((item) => {
+        const rawPic = item.pic
+          ? item.pic.startsWith("//") ? `https:${item.pic}` : item.pic
+          : "";
+        const rawUpic = item.upic
+          ? item.upic.startsWith("//") ? `https:${item.upic}` : item.upic
+          : "";
+        const cleanTitle = item.title.replace(/<[^>]*>/g, "");
+
+        return {
+          id: item.bvid,
+          bvid: item.bvid,
+          title: cleanTitle,
+          thumbnail: rawPic ? `/api/bilibili/image?url=${encodeURIComponent(rawPic)}` : "",
+          duration: item.duration,
+          views: item.play,
+          likes: item.like,
+          uploadedAt: formatTimeAgo(item.pubdate),
+          category: mapCategory(item.typename),
+          uploader: {
+            name: item.author,
+            avatar: rawUpic ? `/api/bilibili/image?url=${encodeURIComponent(rawUpic)}` : "",
+            followers: 0,
+          },
+          videoUrl: `https://player.bilibili.com/player.html?bvid=${item.bvid}&autoplay=0&high_quality=1&danmaku=0`,
+          description: item.description || cleanTitle,
+        };
+      });
+
+    res.json({
+      videos,
+      total: json.data.numResults ?? 0,
+      pages: json.data.numPages ?? 1,
+      page,
+    });
+  } catch (err) {
+    req.log.error({ err }, "Failed to proxy Bilibili search API");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 export default router;

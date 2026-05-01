@@ -7,6 +7,7 @@ import { ThemeProvider } from "next-themes";
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/Home";
 import Watch from "@/pages/Watch";
+import SearchPage from "@/pages/Search";
 
 const queryClient = new QueryClient();
 
@@ -15,6 +16,7 @@ function Router() {
     <AnimatePresence mode="wait">
       <Switch>
         <Route path="/" component={Home} />
+        <Route path="/search" component={SearchPage} />
         <Route path="/watch/:id" component={Watch} />
         <Route component={NotFound} />
       </Switch>
