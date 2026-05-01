@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Bilibili Video Browser"
+version = "1.0.0"
+id = "artifacts/bilibili-browser"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23102
+
+[services.development]
+run = "pnpm --filter @workspace/bilibili-browser run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/bilibili-browser", "run", "build" ]
+publicDir = "artifacts/bilibili-browser/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23102"
+BASE_PATH = "/"
