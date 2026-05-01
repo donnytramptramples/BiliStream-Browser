@@ -145,6 +145,140 @@ router.get("/image", async (req: Request, res: Response) => {
   }
 });
 
+router.get("/videoinfo/:bvid", async (req: Request, res: Response) => {
+  const { bvid } = req.params;
+  try {
+    const r = await fetch(
+      `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
+      { headers: BILIBILI_HEADERS }
+    );
+    const json = (await r.json()) as {
+      code: number;
+      data: { cid: number; title: string; pic: string; duration: number; desc: string; stat: { view: number; like: number }; owner: { name: string; face: string } };
+    };
+    if (json.code !== 0) { res.status(404).json({ error: "Video not found" }); return; }
+    res.json({
+      bvid,
+      cid: json.data.cid,
+      title: json.data.title,
+      pic: json.data.pic,
+      duration: json.data.duration,
+      desc: json.data.desc,
+      views: json.data.stat.view,
+      likes: json.data.stat.like,
+      owner: json.data.owner,
+    });
+  } catch (err) {
+    req.log.error({ err }, "videoinfo failed");
+    res.status(500).json({ error: "Internal error" });
+  }
+});
+
+router.get("/playurl", async (req: Request, res: Response) => {
+  const bvid = req.query.bvid as string;
+  const cid = req.query.cid as string;
+  if (!bvid || !cid) { res.status(400).json({ error: "bvid and cid required" }); return; }
+
+  const qualityOrder = [116, 80, 64, 32, 16];
+
+  for (const qn of qualityOrder) {
+    try {
+      const url = `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&platform=html5&high_quality=1`;
+      const r = await fetch(url, { headers: BILIBILI_HEADERS });
+      const json = (await r.json()) as {
+        code: number;
+        data: {
+          quality: number;
+          accept_quality: number[];
+          accept_description: string[];
+          durl: Array<{ url: string; backup_url: string[]; size: number; length: number }>;
+        };
+      };
+      if (json.code !== 0 || !json.data?.durl?.length) continue;
+
+      const durl = json.data.durl[0];
+      const streamUrl = durl.url || durl.backup_url?.[0];
+      if (!streamUrl) continue;
+
+      res.json({
+        quality: json.data.quality,
+        accept_quality: json.data.accept_quality,
+        accept_description: json.data.accept_description,
+        url: `/api/bilibili/stream?url=${encodeURIComponent(streamUrl)}`,
+        size: durl.size,
+        length: durl.length,
+      });
+      return;
+    } catch {
+      continue;
+    }
+  }
+  res.status(502).json({ error: "Could not resolve stream URL" });
+});
+
+router.get("/stream", async (req: Request, res: Response) => {
+  const streamUrl = req.query.url as string;
+  if (!streamUrl || !streamUrl.startsWith("http")) {
+    res.status(400).send("Invalid URL");
+    return;
+  }
+
+  const headers: Record<string, string> = {
+    ...BILIBILI_HEADERS,
+  };
+  if (req.headers.range) {
+    headers["Range"] = req.headers.range;
+  }
+
+  try {
+    const upstream = await fetch(streamUrl, { headers });
+
+    if (!upstream.ok && upstream.status !== 206) {
+      res.status(upstream.status).send("Stream fetch failed");
+      return;
+    }
+
+    const contentType = upstream.headers.get("content-type") ?? "video/mp4";
+    const contentLength = upstream.headers.get("content-length");
+    const contentRange = upstream.headers.get("content-range");
+    const acceptRanges = upstream.headers.get("accept-ranges") ?? "bytes";
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Accept-Ranges", acceptRanges);
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+
+    if (contentLength) res.setHeader("Content-Length", contentLength);
+    if (contentRange) res.setHeader("Content-Range", contentRange);
+
+    res.status(upstream.status);
+
+    const reader = upstream.body?.getReader();
+    if (!reader) { res.end(); return; }
+
+    const pump = async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { res.end(); break; }
+          const ok = res.write(value);
+          if (!ok) {
+            await new Promise<void>((resolve) => res.once("drain", resolve));
+          }
+        }
+      } catch {
+        res.end();
+      }
+    };
+
+    req.on("close", () => reader.cancel().catch(() => {}));
+    await pump();
+  } catch (err) {
+    req.log.error({ err }, "stream proxy failed");
+    if (!res.headersSent) res.status(500).send("Stream error");
+  }
+});
+
 router.get("/search", async (req: Request, res: Response) => {
   const keyword = req.query.q as string;
   const page = parseInt((req.query.page as string) ?? "1", 10) || 1;

@@ -1,14 +1,77 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams } from "wouter";
 import { motion } from "framer-motion";
-import { ThumbsUp, Share2, Plus, MoreHorizontal } from "lucide-react";
+import { ThumbsUp, Share2, Plus, MoreHorizontal, Loader2, AlertCircle } from "lucide-react";
 import { Header } from "@/components/Header";
 import { VideoCard } from "@/components/VideoCard";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { useBilibiliVideos } from "@/hooks/useBilibiliVideos";
+import { useBilibiliPlay, QUALITY_LABEL } from "@/hooks/useBilibiliPlay";
 import { formatNumber, shuffleArray } from "@/lib/utils";
 import NotFound from "./not-found";
+
+function VideoPlayer({ bvid }: { bvid: string }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const { playInfo, isLoading, error } = useBilibiliPlay(bvid);
+  const [videoError, setVideoError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setVideoError(null);
+    if (videoRef.current) {
+      videoRef.current.load();
+    }
+  }, [playInfo?.streamUrl]);
+
+  if (isLoading) {
+    return (
+      <div className="w-full aspect-video bg-black rounded-xl flex flex-col items-center justify-center gap-3">
+        <Loader2 className="w-10 h-10 text-primary animate-spin" />
+        <p className="text-white/60 text-sm">正在加载视频...</p>
+      </div>
+    );
+  }
+
+  if (error || videoError) {
+    return (
+      <div className="w-full aspect-video bg-black rounded-xl flex flex-col items-center justify-center gap-3">
+        <AlertCircle className="w-10 h-10 text-destructive" />
+        <p className="text-white/70 text-sm text-center max-w-xs">
+          {error || videoError}
+        </p>
+        <p className="text-white/40 text-xs">部分视频因地区限制无法播放</p>
+      </div>
+    );
+  }
+
+  if (!playInfo) return null;
+
+  return (
+    <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden shadow-lg">
+      <video
+        ref={videoRef}
+        src={playInfo.streamUrl}
+        controls
+        autoPlay
+        playsInline
+        preload="auto"
+        className="w-full h-full"
+        onError={() => setVideoError("视频加载失败，可能因版权或地区限制")}
+        crossOrigin="anonymous"
+        data-testid="video-player"
+      />
+      <div className="absolute top-3 right-3 flex gap-1.5 pointer-events-none">
+        <Badge
+          className="text-[11px] px-2 py-0.5 font-semibold shadow"
+          style={{ background: "#FB7299", color: "#fff" }}
+        >
+          {QUALITY_LABEL[playInfo.quality] ?? `${playInfo.quality}P`}
+        </Badge>
+      </div>
+    </div>
+  );
+}
 
 export default function Watch() {
   const { id } = useParams();
@@ -43,33 +106,20 @@ export default function Watch() {
       <main className="container mx-auto px-4 py-6">
         {!video ? (
           <div className="flex items-center justify-center py-24 text-muted-foreground">
+            <Loader2 className="w-6 h-6 animate-spin mr-2" />
             <p>加载中...</p>
           </div>
         ) : (
           <div className="flex flex-col lg:flex-row gap-6 xl:gap-8">
             <div className="flex-1 w-full max-w-[1000px] mx-auto lg:max-w-none">
-              <div
-                className="w-full bg-black rounded-xl overflow-hidden shadow-sm mb-4"
-                style={{ aspectRatio: "16/9" }}
-              >
-                <iframe
-                  src={video.videoUrl}
-                  width="100%"
-                  height="100%"
-                  allowFullScreen
-                  allow="autoplay; fullscreen; picture-in-picture"
-                  scrolling="no"
-                  frameBorder="0"
-                  title={video.title}
-                  style={{ border: "none", display: "block" }}
-                />
-              </div>
 
-              <h1 className="text-xl md:text-2xl font-bold mb-2 leading-tight">
+              <VideoPlayer bvid={video.bvid} />
+
+              <h1 className="text-xl md:text-2xl font-bold mt-4 mb-2 leading-tight">
                 {video.title}
               </h1>
 
-              <div className="flex items-center text-sm text-muted-foreground gap-4 mb-4">
+              <div className="flex items-center text-sm text-muted-foreground gap-4 mb-4 flex-wrap">
                 <span>{formatNumber(video.views)} 次观看</span>
                 <span>{video.uploadedAt}</span>
                 <span className="bg-muted px-2 py-0.5 rounded text-xs font-medium">
@@ -84,9 +134,7 @@ export default function Watch() {
                     <AvatarFallback>{video.uploader.name[0]}</AvatarFallback>
                   </Avatar>
                   <div>
-                    <h3 className="font-bold text-[15px]">
-                      {video.uploader.name}
-                    </h3>
+                    <h3 className="font-bold text-[15px]">{video.uploader.name}</h3>
                     {video.uploader.followers > 0 && (
                       <p className="text-xs text-muted-foreground">
                         {formatNumber(video.uploader.followers)} 粉丝
@@ -118,34 +166,18 @@ export default function Watch() {
                     onClick={() => setIsLiked(!isLiked)}
                     data-testid="button-like"
                   >
-                    <ThumbsUp
-                      className="w-4 h-4"
-                      fill={isLiked ? "currentColor" : "none"}
-                    />
+                    <ThumbsUp className="w-4 h-4" fill={isLiked ? "currentColor" : "none"} />
                     {formatNumber(video.likes + (isLiked ? 1 : 0))}
                   </Button>
-                  <Button
-                    variant="secondary"
-                    className="rounded-full gap-2 shrink-0"
-                    data-testid="button-share"
-                  >
+                  <Button variant="secondary" className="rounded-full gap-2 shrink-0">
                     <Share2 className="w-4 h-4" />
                     分享
                   </Button>
-                  <Button
-                    variant="secondary"
-                    className="rounded-full gap-2 shrink-0"
-                    data-testid="button-save"
-                  >
+                  <Button variant="secondary" className="rounded-full gap-2 shrink-0">
                     <Plus className="w-4 h-4" />
                     收藏
                   </Button>
-                  <Button
-                    variant="secondary"
-                    size="icon"
-                    className="rounded-full shrink-0"
-                    data-testid="button-more"
-                  >
+                  <Button variant="secondary" size="icon" className="rounded-full shrink-0">
                     <MoreHorizontal className="w-4 h-4" />
                   </Button>
                 </div>
