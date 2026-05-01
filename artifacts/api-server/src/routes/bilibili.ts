@@ -89,13 +89,11 @@ router.get("/popular", async (req: Request, res: Response) => {
       return;
     }
 
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
-
     const videos = json.data.list.map((item) => ({
       id: item.bvid,
       bvid: item.bvid,
       title: item.title,
-      thumbnail: `${baseUrl}/api/bilibili/image?url=${encodeURIComponent(item.pic)}`,
+      thumbnail: `/api/bilibili/image?url=${encodeURIComponent(item.pic)}`,
       duration: formatDuration(item.duration),
       views: item.stat.view,
       likes: item.stat.like,
@@ -103,7 +101,7 @@ router.get("/popular", async (req: Request, res: Response) => {
       category: mapCategory(item.tname),
       uploader: {
         name: item.owner.name,
-        avatar: `${baseUrl}/api/bilibili/image?url=${encodeURIComponent(item.owner.face)}`,
+        avatar: `/api/bilibili/image?url=${encodeURIComponent(item.owner.face)}`,
         followers: 0,
       },
       videoUrl: `https://player.bilibili.com/player.html?bvid=${item.bvid}&autoplay=0&high_quality=1&danmaku=0`,
