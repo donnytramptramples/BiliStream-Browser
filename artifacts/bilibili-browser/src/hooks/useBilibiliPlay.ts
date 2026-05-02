@@ -1,20 +1,12 @@
 import { useState, useEffect } from "react";
+import { getPreloaded, preloadVideo, type PreloadedVideoData } from "@/lib/videoPreloadCache";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-export interface PlayInfo {
-  rawUrl: string;
-  proxyUrl: string;
-  quality: number;
+export type PlayInfo = PreloadedVideoData & {
   acceptQuality: number[];
   acceptDescription: string[];
-  cid: number;
-  title: string;
-  pic: string;
-  views: number;
-  likes: number;
-  owner: { name: string; face: string };
-}
+};
 
 const QUALITY_LABEL: Record<number, string> = {
   116: "1080P60",
@@ -25,6 +17,14 @@ const QUALITY_LABEL: Record<number, string> = {
 };
 
 export { QUALITY_LABEL };
+
+function toPlayInfo(data: PreloadedVideoData): PlayInfo {
+  return {
+    ...data,
+    acceptQuality: data.accept_quality,
+    acceptDescription: data.accept_description,
+  };
+}
 
 export function useBilibiliPlay(bvid: string) {
   const [playInfo, setPlayInfo] = useState<PlayInfo | null>(null);
@@ -39,50 +39,41 @@ export function useBilibiliPlay(bvid: string) {
     setError(null);
     setPlayInfo(null);
 
-    fetch(`${BASE}/api/bilibili/video/${bvid}`)
-      .then((r) => {
+    (async () => {
+      try {
+        // Check preload cache first — may already be resolved (instant) or in-flight
+        const cached = await getPreloaded(bvid);
+        if (cached) {
+          if (!cancelled) {
+            setPlayInfo(toPlayInfo(cached));
+            setIsLoading(false);
+          }
+          return;
+        }
+
+        // Cache miss — fetch directly
+        const r = await fetch(`${BASE}/api/bilibili/video/${bvid}`);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<{
-          cid: number;
-          title: string;
-          pic: string;
-          views: number;
-          likes: number;
-          owner: { name: string; face: string };
-          rawUrl: string;
-          proxyUrl: string;
-          quality: number;
-          accept_quality: number[];
-          accept_description: string[];
-          error?: string;
-        }>;
-      })
-      .then((data) => {
-        if (cancelled) return;
+        const data = (await r.json()) as PreloadedVideoData & { error?: string };
         if (data.error) throw new Error(data.error);
-        setPlayInfo({
-          rawUrl: data.rawUrl,
-          proxyUrl: data.proxyUrl,
-          quality: data.quality,
-          acceptQuality: data.accept_quality,
-          acceptDescription: data.accept_description,
-          cid: data.cid,
-          title: data.title,
-          pic: data.pic,
-          views: data.views,
-          likes: data.likes,
-          owner: data.owner,
-        });
-        setIsLoading(false);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load video");
-        setIsLoading(false);
-      });
+
+        if (!cancelled) {
+          setPlayInfo(toPlayInfo(data));
+          setIsLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load video");
+          setIsLoading(false);
+        }
+      }
+    })();
 
     return () => { cancelled = true; };
   }, [bvid]);
 
   return { playInfo, isLoading, error };
 }
+
+// Kick off a background preload — call this from VideoCard on hover
+export { preloadVideo };
