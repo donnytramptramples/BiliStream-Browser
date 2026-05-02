@@ -7,7 +7,7 @@ interface BilibiliResponse {
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-export function useBilibiliVideos() {
+export function useBilibiliVideos(category = "All") {
   const [videos, setVideos] = useState<Video[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -16,15 +16,21 @@ export function useBilibiliVideos() {
     let cancelled = false;
     setIsLoading(true);
     setError(null);
+    setVideos([]);
 
-    fetch(`${BASE}/api/bilibili/popular`)
+    const url =
+      category === "All" || category === "Recommended"
+        ? `${BASE}/api/bilibili/popular`
+        : `${BASE}/api/bilibili/category?name=${encodeURIComponent(category)}`;
+
+    fetch(url)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<BilibiliResponse>;
       })
       .then((data) => {
         if (!cancelled) {
-          setVideos(data.videos);
+          setVideos(data.videos ?? []);
           setIsLoading(false);
         }
       })
@@ -35,10 +41,8 @@ export function useBilibiliVideos() {
         }
       });
 
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    return () => { cancelled = true; };
+  }, [category]);
 
-  return { videos, isLoading, error, refetch: () => {} };
+  return { videos, isLoading, error };
 }

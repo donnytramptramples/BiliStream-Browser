@@ -8,8 +8,14 @@ const BILIBILI_POPULAR_URL =
 const BILIBILI_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Accept": "application/json, text/plain, */*",
+  "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Cache-Control": "no-cache",
+  "Pragma": "no-cache",
   Referer: "https://www.bilibili.com/",
   Origin: "https://www.bilibili.com",
+  Cookie: "buvid3=A1B2C3D4-E5F6-7890-ABCD-EF1234567890infoc; b_nut=1700000000; CURRENT_FNVAL=4048; buvid4=A1B2C3D4-E5F6-7890-ABCD-EF1234567890-1234; innersign=0",
 };
 
 function formatDuration(seconds: number): string {
@@ -276,6 +282,98 @@ router.get("/stream", async (req: Request, res: Response) => {
   } catch (err) {
     req.log.error({ err }, "stream proxy failed");
     if (!res.headersSent) res.status(500).send("Stream error");
+  }
+});
+
+const CATEGORY_KEYWORDS: Record<string, string> = {
+  Anime: "动漫",
+  Gaming: "游戏",
+  Music: "音乐",
+  Tech: "科技",
+  Life: "生活",
+  Fashion: "时尚",
+  Sports: "体育",
+};
+
+router.get("/category", async (req: Request, res: Response) => {
+  const name = (req.query.name as string) ?? "";
+  const page = parseInt((req.query.page as string) ?? "1", 10) || 1;
+  const keyword = CATEGORY_KEYWORDS[name];
+
+  if (!keyword) {
+    res.status(400).json({ error: "Unknown category" });
+    return;
+  }
+
+  const url = `https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=${encodeURIComponent(keyword)}&order=totalrank&page=${page}&ps=30`;
+
+  try {
+    const response = await fetch(url, { headers: BILIBILI_HEADERS });
+    if (!response.ok) {
+      res.status(502).json({ error: "Bilibili search failed" });
+      return;
+    }
+
+    const json = (await response.json()) as {
+      code: number;
+      data: {
+        result?: Array<{
+          bvid: string;
+          title: string;
+          pic: string;
+          duration: string;
+          play: number;
+          like: number;
+          pubdate: number;
+          author: string;
+          upic: string;
+          typename: string;
+          description: string;
+        }>;
+        numResults?: number;
+        numPages?: number;
+      };
+    };
+
+    if (json.code !== 0 || !json.data?.result) {
+      res.json({ videos: [] });
+      return;
+    }
+
+    const seen = new Set<string>();
+    const videos = json.data.result
+      .filter((item) => {
+        if (!item.bvid || seen.has(item.bvid)) return false;
+        seen.add(item.bvid);
+        return true;
+      })
+      .map((item) => {
+        const rawPic = item.pic ? (item.pic.startsWith("//") ? `https:${item.pic}` : item.pic) : "";
+        const rawUpic = item.upic ? (item.upic.startsWith("//") ? `https:${item.upic}` : item.upic) : "";
+        return {
+          id: item.bvid,
+          bvid: item.bvid,
+          title: item.title.replace(/<[^>]*>/g, ""),
+          thumbnail: rawPic ? `/api/bilibili/image?url=${encodeURIComponent(rawPic)}` : "",
+          duration: item.duration,
+          views: item.play,
+          likes: item.like,
+          uploadedAt: formatTimeAgo(item.pubdate),
+          category: name,
+          uploader: {
+            name: item.author,
+            avatar: rawUpic ? `/api/bilibili/image?url=${encodeURIComponent(rawUpic)}` : "",
+            followers: 0,
+          },
+          videoUrl: "",
+          description: item.description || item.title.replace(/<[^>]*>/g, ""),
+        };
+      });
+
+    res.json({ videos });
+  } catch (err) {
+    req.log.error({ err }, "category fetch failed");
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 

@@ -1,10 +1,9 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { Header } from "@/components/Header";
 import { CategoryNav } from "@/components/CategoryNav";
 import { VideoGrid } from "@/components/VideoGrid";
 import { useBilibiliVideos } from "@/hooks/useBilibiliVideos";
 import { shuffleArray } from "@/lib/utils";
-import type { Video } from "@/data/videos";
 
 const CATEGORIES = [
   "All",
@@ -20,22 +19,15 @@ const CATEGORIES = [
 
 export default function Home() {
   const [selectedCategory, setSelectedCategory] = useState("All");
-  const [videoPool, setVideoPool] = useState<Video[]>([]);
-  const { videos, isLoading, error } = useBilibiliVideos();
+  const { videos, isLoading, error } = useBilibiliVideos(selectedCategory);
 
-  useEffect(() => {
-    if (videos.length > 0) {
-      setVideoPool(shuffleArray(videos));
-    }
-  }, [videos]);
-
-  const filteredVideos = useMemo(() => {
-    if (selectedCategory === "All" || selectedCategory === "Recommended") return videoPool;
-    return videoPool.filter((v) => v.category === selectedCategory);
-  }, [videoPool, selectedCategory]);
+  const displayVideos = useMemo(() => {
+    if (selectedCategory === "All") return shuffleArray(videos);
+    return videos;
+  }, [videos, selectedCategory]);
 
   const handleRefresh = useCallback(() => {
-    setVideoPool((prev) => shuffleArray([...prev]));
+    window.location.reload();
   }, []);
 
   const handleSelectCategory = useCallback((cat: string) => {
@@ -57,7 +49,7 @@ export default function Home() {
             <p className="text-sm opacity-70">{error}</p>
           </div>
         ) : (
-          <VideoGrid videos={filteredVideos} onRefresh={handleRefresh} isLoading={isLoading} />
+          <VideoGrid videos={displayVideos} onRefresh={handleRefresh} isLoading={isLoading} />
         )}
       </main>
     </div>
