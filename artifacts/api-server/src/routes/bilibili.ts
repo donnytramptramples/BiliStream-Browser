@@ -1,4 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
+import https from "https";
+import http from "http";
+import { URL as NodeURL } from "url";
 
 const router: IRouter = Router();
 
@@ -180,109 +183,171 @@ router.get("/videoinfo/:bvid", async (req: Request, res: Response) => {
   }
 });
 
+async function resolvePlayUrl(bvid: string, cid: number): Promise<{
+  rawUrl: string;
+  proxyUrl: string;
+  quality: number;
+  accept_quality: number[];
+  accept_description: string[];
+} | null> {
+  const qualities = [32, 16, 64];
+
+  type PlayResult = {
+    rawUrl: string;
+    proxyUrl: string;
+    quality: number;
+    accept_quality: number[];
+    accept_description: string[];
+  };
+
+  const tryQuality = async (qn: number): Promise<PlayResult> => {
+    const url = `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&platform=html5&high_quality=1`;
+    const r = await fetch(url, { headers: BILIBILI_HEADERS });
+    const json = (await r.json()) as {
+      code: number;
+      data: {
+        quality: number;
+        accept_quality: number[];
+        accept_description: string[];
+        durl: Array<{ url: string; backup_url: string[]; size: number }>;
+      };
+    };
+    if (json.code !== 0 || !json.data?.durl?.length) throw new Error("no durl");
+    const durl = json.data.durl[0];
+    const rawUrl = durl.url || durl.backup_url?.[0];
+    if (!rawUrl) throw new Error("empty url");
+    return {
+      rawUrl,
+      proxyUrl: `/api/bilibili/stream?url=${encodeURIComponent(rawUrl)}`,
+      quality: json.data.quality,
+      accept_quality: json.data.accept_quality,
+      accept_description: json.data.accept_description,
+    };
+  };
+
+  try {
+    return await Promise.any(qualities.map(tryQuality));
+  } catch {
+    return null;
+  }
+}
+
+router.get("/video/:bvid", async (req: Request, res: Response) => {
+  const { bvid } = req.params;
+  try {
+    const infoUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`;
+    const infoRes = await fetch(infoUrl, { headers: BILIBILI_HEADERS });
+    const infoJson = (await infoRes.json()) as {
+      code: number;
+      data: { cid: number; title: string; pic: string; duration: number; desc: string; stat: { view: number; like: number }; owner: { name: string; face: string } };
+    };
+    if (infoJson.code !== 0) { res.status(404).json({ error: "Video not found" }); return; }
+
+    const { cid } = infoJson.data;
+    const play = await resolvePlayUrl(bvid, cid);
+    if (!play) { res.status(502).json({ error: "Could not resolve stream URL" }); return; }
+
+    res.json({
+      bvid,
+      cid,
+      title: infoJson.data.title,
+      pic: infoJson.data.pic,
+      duration: infoJson.data.duration,
+      desc: infoJson.data.desc,
+      views: infoJson.data.stat.view,
+      likes: infoJson.data.stat.like,
+      owner: infoJson.data.owner,
+      rawUrl: play.rawUrl,
+      proxyUrl: play.proxyUrl,
+      quality: play.quality,
+      accept_quality: play.accept_quality,
+      accept_description: play.accept_description,
+    });
+  } catch (err) {
+    req.log.error({ err }, "video endpoint failed");
+    res.status(500).json({ error: "Internal error" });
+  }
+});
+
 router.get("/playurl", async (req: Request, res: Response) => {
   const bvid = req.query.bvid as string;
   const cid = req.query.cid as string;
   if (!bvid || !cid) { res.status(400).json({ error: "bvid and cid required" }); return; }
 
-  const qualityOrder = [116, 80, 64, 32, 16];
+  const play = await resolvePlayUrl(bvid, parseInt(cid, 10));
+  if (!play) { res.status(502).json({ error: "Could not resolve stream URL" }); return; }
 
-  for (const qn of qualityOrder) {
-    try {
-      const url = `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&platform=html5&high_quality=1`;
-      const r = await fetch(url, { headers: BILIBILI_HEADERS });
-      const json = (await r.json()) as {
-        code: number;
-        data: {
-          quality: number;
-          accept_quality: number[];
-          accept_description: string[];
-          durl: Array<{ url: string; backup_url: string[]; size: number; length: number }>;
-        };
-      };
-      if (json.code !== 0 || !json.data?.durl?.length) continue;
-
-      const durl = json.data.durl[0];
-      const streamUrl = durl.url || durl.backup_url?.[0];
-      if (!streamUrl) continue;
-
-      res.json({
-        quality: json.data.quality,
-        accept_quality: json.data.accept_quality,
-        accept_description: json.data.accept_description,
-        url: `/api/bilibili/stream?url=${encodeURIComponent(streamUrl)}`,
-        size: durl.size,
-        length: durl.length,
-      });
-      return;
-    } catch {
-      continue;
-    }
-  }
-  res.status(502).json({ error: "Could not resolve stream URL" });
+  res.json({
+    quality: play.quality,
+    accept_quality: play.accept_quality,
+    accept_description: play.accept_description,
+    url: play.proxyUrl,
+  });
 });
 
-router.get("/stream", async (req: Request, res: Response) => {
+router.get("/stream", (req: Request, res: Response) => {
   const streamUrl = req.query.url as string;
   if (!streamUrl || !streamUrl.startsWith("http")) {
     res.status(400).send("Invalid URL");
     return;
   }
 
-  const headers: Record<string, string> = {
-    ...BILIBILI_HEADERS,
+  let parsed: NodeURL;
+  try { parsed = new NodeURL(streamUrl); } catch {
+    res.status(400).send("Malformed URL");
+    return;
+  }
+
+  const transport = parsed.protocol === "https:" ? https : http;
+
+  const proxyHeaders: Record<string, string> = {
+    "User-Agent": BILIBILI_HEADERS["User-Agent"],
+    "Referer": BILIBILI_HEADERS.Referer,
+    "Origin": BILIBILI_HEADERS.Origin,
   };
-  if (req.headers.range) {
-    headers["Range"] = req.headers.range;
-  }
+  if (req.headers.range) proxyHeaders["Range"] = req.headers.range as string;
 
-  try {
-    const upstream = await fetch(streamUrl, { headers });
-
-    if (!upstream.ok && upstream.status !== 206) {
-      res.status(upstream.status).send("Stream fetch failed");
-      return;
-    }
-
-    const contentType = upstream.headers.get("content-type") ?? "video/mp4";
-    const contentLength = upstream.headers.get("content-length");
-    const contentRange = upstream.headers.get("content-range");
-    const acceptRanges = upstream.headers.get("accept-ranges") ?? "bytes";
-
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Accept-Ranges", acceptRanges);
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-
-    if (contentLength) res.setHeader("Content-Length", contentLength);
-    if (contentRange) res.setHeader("Content-Range", contentRange);
-
-    res.status(upstream.status);
-
-    const reader = upstream.body?.getReader();
-    if (!reader) { res.end(); return; }
-
-    const pump = async () => {
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) { res.end(); break; }
-          const ok = res.write(value);
-          if (!ok) {
-            await new Promise<void>((resolve) => res.once("drain", resolve));
-          }
-        }
-      } catch {
-        res.end();
+  const proxyReq = transport.request(
+    {
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method: "GET",
+      headers: proxyHeaders,
+    },
+    (proxyRes) => {
+      const status = proxyRes.statusCode ?? 200;
+      if (status >= 400) {
+        res.status(status).send("CDN error");
+        proxyRes.resume();
+        return;
       }
-    };
 
-    req.on("close", () => reader.cancel().catch(() => {}));
-    await pump();
-  } catch (err) {
+      res.writeHead(status, {
+        "Content-Type": proxyRes.headers["content-type"] ?? "video/mp4",
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-cache",
+        "Access-Control-Allow-Origin": "*",
+        ...(proxyRes.headers["content-length"]
+          ? { "Content-Length": proxyRes.headers["content-length"] }
+          : {}),
+        ...(proxyRes.headers["content-range"]
+          ? { "Content-Range": proxyRes.headers["content-range"] }
+          : {}),
+      });
+
+      proxyRes.pipe(res);
+      req.on("close", () => { proxyRes.destroy(); proxyReq.destroy(); });
+    }
+  );
+
+  proxyReq.on("error", (err) => {
+    if (!res.headersSent) res.status(502).send("Proxy error");
+    else res.destroy();
     req.log.error({ err }, "stream proxy failed");
-    if (!res.headersSent) res.status(500).send("Stream error");
-  }
+  });
+
+  proxyReq.end();
 });
 
 const CATEGORY_KEYWORDS: Record<string, string> = {

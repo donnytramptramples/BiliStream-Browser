@@ -8,71 +8,40 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useBilibiliVideos } from "@/hooks/useBilibiliVideos";
-import { useBilibiliPlay, QUALITY_LABEL } from "@/hooks/useBilibiliPlay";
+import { type PlayInfo, useBilibiliPlay, QUALITY_LABEL } from "@/hooks/useBilibiliPlay";
 import { formatNumber, shuffleArray } from "@/lib/utils";
 import type { Video } from "@/data/videos";
 
-const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
-
-function useVideoMeta(bvid: string, feedVideos: Video[]) {
-  const [video, setVideo] = useState<Video | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!bvid) return;
-    const found = feedVideos.find((v) => v.id === bvid);
-    if (found) {
-      setVideo(found);
-      setLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-    fetch(`${BASE}/api/bilibili/videoinfo/${bvid}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("not found"))))
-      .then((info: { bvid: string; title: string; pic: string; duration: number; desc: string; views: number; likes: number; owner: { name: string; face: string } }) => {
-        if (cancelled) return;
-        const v: Video = {
-          id: bvid,
-          bvid,
-          title: info.title,
-          thumbnail: `/api/bilibili/image?url=${encodeURIComponent(info.pic)}`,
-          duration: `${Math.floor(info.duration / 60)}:${String(info.duration % 60).padStart(2, "0")}`,
-          views: info.views,
-          likes: info.likes,
-          uploadedAt: "",
-          category: "Recommended",
-          uploader: {
-            name: info.owner.name,
-            avatar: `/api/bilibili/image?url=${encodeURIComponent(info.owner.face)}`,
-            followers: 0,
-          },
-          videoUrl: "",
-          description: info.desc || info.title,
-        };
-        setVideo(v);
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => { cancelled = true; };
-  }, [bvid, feedVideos]);
-
-  return { video, loading };
+interface VideoPlayerProps {
+  bvid: string;
+  playInfo: PlayInfo | null;
+  isLoading: boolean;
+  error: string | null;
 }
 
-function VideoPlayer({ bvid }: { bvid: string }) {
+function VideoPlayer({ bvid, playInfo, isLoading, error }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const { playInfo, isLoading, error } = useBilibiliPlay(bvid);
-  const [videoError, setVideoError] = useState<string | null>(null);
+  const [usedProxy, setUsedProxy] = useState(false);
+  const [hardFail, setHardFail] = useState(false);
 
   useEffect(() => {
-    setVideoError(null);
-    if (videoRef.current) videoRef.current.load();
-  }, [playInfo?.streamUrl]);
+    setUsedProxy(false);
+    setHardFail(false);
+  }, [bvid]);
+
+  const activeSrc = useMemo(() => {
+    if (!playInfo) return null;
+    return usedProxy ? playInfo.proxyUrl : playInfo.rawUrl;
+  }, [playInfo, usedProxy]);
+
+  useEffect(() => {
+    if (videoRef.current && activeSrc) videoRef.current.load();
+  }, [activeSrc]);
+
+  function handleError() {
+    if (!usedProxy) setUsedProxy(true);
+    else setHardFail(true);
+  }
 
   if (isLoading) {
     return (
@@ -83,14 +52,13 @@ function VideoPlayer({ bvid }: { bvid: string }) {
     );
   }
 
-  if (error || videoError) {
+  if (error || hardFail) {
     return (
       <div className="w-full aspect-video bg-black rounded-xl flex flex-col items-center justify-center gap-4 px-6">
         <AlertCircle className="w-12 h-12 text-[#FB7299]" />
         <div className="text-center">
           <p className="text-white/80 text-base font-medium mb-1">无法播放此视频</p>
           <p className="text-white/50 text-sm">该视频可能因版权或地区限制无法播放</p>
-          <p className="text-white/30 text-xs mt-2">{error || videoError}</p>
         </div>
         <a
           href={`https://www.bilibili.com/video/${bvid}`}
@@ -105,53 +73,83 @@ function VideoPlayer({ bvid }: { bvid: string }) {
     );
   }
 
-  if (!playInfo) return null;
+  if (!activeSrc) return null;
 
   return (
     <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden shadow-lg">
       <video
         ref={videoRef}
-        src={playInfo.streamUrl}
+        src={activeSrc}
         controls
         autoPlay
         playsInline
         preload="auto"
         className="w-full h-full"
-        onError={() => setVideoError("视频解码失败")}
-        crossOrigin="anonymous"
+        onError={handleError}
       />
-      <div className="absolute top-3 right-3 flex gap-1.5 pointer-events-none">
-        <Badge
-          className="text-[11px] px-2 py-0.5 font-semibold shadow"
-          style={{ background: "#FB7299", color: "#fff" }}
-        >
-          {QUALITY_LABEL[playInfo.quality] ?? `${playInfo.quality}P`}
-        </Badge>
-      </div>
+      {playInfo && (
+        <div className="absolute top-3 right-3 pointer-events-none">
+          <Badge
+            className="text-[11px] px-2 py-0.5 font-semibold shadow"
+            style={{ background: "#FB7299", color: "#fff" }}
+          >
+            {QUALITY_LABEL[playInfo.quality] ?? `${playInfo.quality}P`}
+          </Badge>
+        </div>
+      )}
     </div>
   );
 }
 
 export default function Watch() {
   const { id } = useParams();
+  const bvid = id ?? "";
   const [isLiked, setIsLiked] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
+
+  // Single fetch — shared by player and metadata
+  const { playInfo, isLoading: playLoading, error: playError } = useBilibiliPlay(bvid);
   const { videos: feedVideos } = useBilibiliVideos();
-  const { video, loading } = useVideoMeta(id ?? "", feedVideos);
+
+  const feedVideo = useMemo(
+    () => feedVideos.find((v) => v.id === bvid) ?? null,
+    [feedVideos, bvid]
+  );
 
   const relatedVideos = useMemo(
-    () => shuffleArray(feedVideos.filter((v) => v.id !== id)).slice(0, 10),
-    [id, feedVideos]
+    () => shuffleArray(feedVideos.filter((v) => v.id !== bvid)).slice(0, 10),
+    [feedVideos, bvid]
   );
+
+  // Derive display metadata from playInfo (fastest) or fall back to feed
+  const video: Video | null = useMemo(() => {
+    if (feedVideo) return feedVideo;
+    if (!playInfo) return null;
+    return {
+      id: bvid,
+      bvid,
+      title: playInfo.title,
+      thumbnail: `/api/bilibili/image?url=${encodeURIComponent(playInfo.pic)}`,
+      duration: "",
+      views: playInfo.views,
+      likes: playInfo.likes,
+      uploadedAt: "",
+      category: "Recommended",
+      uploader: {
+        name: playInfo.owner.name,
+        avatar: `/api/bilibili/image?url=${encodeURIComponent(playInfo.owner.face)}`,
+        followers: 0,
+      },
+      videoUrl: "",
+      description: "",
+    };
+  }, [feedVideo, playInfo, bvid]);
 
   useEffect(() => {
     setIsLiked(false);
     setIsSubscribed(false);
     window.scrollTo(0, 0);
-  }, [id]);
-
-  const showSkeleton = loading;
-  const bvid = id ?? "";
+  }, [bvid]);
 
   return (
     <motion.div
@@ -167,12 +165,20 @@ export default function Watch() {
         <div className="flex flex-col lg:flex-row gap-6 xl:gap-8">
           <div className="flex-1 w-full max-w-[1000px] mx-auto lg:max-w-none">
 
-            <VideoPlayer bvid={bvid} />
+            {/* Player receives pre-fetched data — no duplicate API call */}
+            <VideoPlayer
+              bvid={bvid}
+              playInfo={playInfo}
+              isLoading={playLoading}
+              error={playError}
+            />
 
-            {showSkeleton ? (
+            {/* Metadata — appears as soon as playInfo resolves */}
+            {playLoading && !video ? (
               <div className="mt-4 space-y-3 animate-pulse">
                 <div className="h-7 bg-muted rounded w-3/4" />
                 <div className="h-4 bg-muted rounded w-1/3" />
+                <div className="h-10 bg-muted rounded w-1/2 mt-2" />
               </div>
             ) : video ? (
               <>
@@ -242,9 +248,7 @@ export default function Watch() {
                   </div>
                 )}
               </>
-            ) : (
-              <div className="mt-4 text-muted-foreground text-sm">无法加载视频信息</div>
-            )}
+            ) : null}
           </div>
 
           <div className="w-full lg:w-[350px] xl:w-[400px] shrink-0">

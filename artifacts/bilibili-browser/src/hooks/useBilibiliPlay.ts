@@ -3,11 +3,17 @@ import { useState, useEffect } from "react";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 export interface PlayInfo {
-  streamUrl: string;
+  rawUrl: string;
+  proxyUrl: string;
   quality: number;
   acceptQuality: number[];
   acceptDescription: string[];
   cid: number;
+  title: string;
+  pic: string;
+  views: number;
+  likes: number;
+  owner: { name: string; face: string };
 }
 
 const QUALITY_LABEL: Record<number, string> = {
@@ -33,43 +39,47 @@ export function useBilibiliPlay(bvid: string) {
     setError(null);
     setPlayInfo(null);
 
-    (async () => {
-      try {
-        const infoRes = await fetch(`${BASE}/api/bilibili/videoinfo/${bvid}`);
-        if (!infoRes.ok) throw new Error("Video info fetch failed");
-        const info = (await infoRes.json()) as { cid: number };
-
-        const playRes = await fetch(
-          `${BASE}/api/bilibili/playurl?bvid=${bvid}&cid=${info.cid}`
-        );
-        if (!playRes.ok) throw new Error("Stream URL fetch failed");
-        const play = (await playRes.json()) as {
-          url: string;
+    fetch(`${BASE}/api/bilibili/video/${bvid}`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<{
+          cid: number;
+          title: string;
+          pic: string;
+          views: number;
+          likes: number;
+          owner: { name: string; face: string };
+          rawUrl: string;
+          proxyUrl: string;
           quality: number;
           accept_quality: number[];
           accept_description: string[];
           error?: string;
-        };
-
-        if (play.error) throw new Error(play.error);
-
-        if (!cancelled) {
-          setPlayInfo({
-            streamUrl: play.url,
-            quality: play.quality,
-            acceptQuality: play.accept_quality,
-            acceptDescription: play.accept_description,
-            cid: info.cid,
-          });
-          setIsLoading(false);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load video");
-          setIsLoading(false);
-        }
-      }
-    })();
+        }>;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        if (data.error) throw new Error(data.error);
+        setPlayInfo({
+          rawUrl: data.rawUrl,
+          proxyUrl: data.proxyUrl,
+          quality: data.quality,
+          acceptQuality: data.accept_quality,
+          acceptDescription: data.accept_description,
+          cid: data.cid,
+          title: data.title,
+          pic: data.pic,
+          views: data.views,
+          likes: data.likes,
+          owner: data.owner,
+        });
+        setIsLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to load video");
+        setIsLoading(false);
+      });
 
     return () => { cancelled = true; };
   }, [bvid]);
