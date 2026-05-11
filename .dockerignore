@@ -1,0 +1,10 @@
+.git
+.agents
+.cache
+.local
+node_modules
+**/node_modules
+**/dist
+**/.turbo
+attached_assets
+artifacts/mockup-sandbox
